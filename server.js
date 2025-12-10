@@ -8,7 +8,7 @@ const cors = require('cors');
 const zlib = require('zlib');
 
 const app = express();
-app.use(cors({ origin: '*' })); // Allow ALL origins
+app.use(cors({ origin: '*' })); 
 app.use(express.json({ limit: '50mb' }));
 
 app.get('/', (req, res) => { res.json({ status: 'NK_HYDRA_ONLINE', version: 'v401.0' }); });
@@ -35,7 +35,6 @@ function updateAgentStatus(agentId, meta = {}) {
     if (idx >= 0) {
         agents[idx] = { ...agents[idx], ...meta, lastSeen: Date.now(), status: 'Online' };
     } else {
-        // If unknown agent pings via HTTP, add placeholder
         agents.push({ id: agentId, socketId: 'http_fallback', status: 'Online', lastSeen: Date.now(), ...meta });
     }
     io.to('ui_room').emit('agents_list', agents);
@@ -47,7 +46,6 @@ app.post('/fallback_event', (req, res) => {
     
     if (packet.id && packet.data) processChunk(packet);
     else if (packet.agentId) {
-        // Simple event or Heartbeat
         if (packet.type !== 'HEARTBEAT') {
              io.to('ui_room').emit('agent_event', packet);
              logEvent(packet);
@@ -119,7 +117,6 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         const agent = agents.find(a => a.socketId === socket.id);
         if (agent) { 
-            // Don't mark offline immediately, wait for HTTP fallback check
             setTimeout(() => {
                 const check = agents.find(a => a.id === agent.id);
                 if (check && (Date.now() - check.lastSeen > 15000)) {
