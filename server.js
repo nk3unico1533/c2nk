@@ -1,5 +1,5 @@
 // TYPE: NODE.JS C2 SERVER
-// NK HYDRA v207.0 [HIGH LATENCY TOLERANCE]
+// NK HYDRA v300.0 [TITAN RESILIENCE]
 
 const express = require('express');
 const http = require('http');
@@ -10,14 +10,15 @@ const app = express();
 app.use(cors());
 
 app.get('/health', (req, res) => { res.status(200).send('OK'); });
-app.get('/', (req, res) => { res.json({ status: 'online', version: 'v207.0', agents: agents.length }); });
+app.get('/', (req, res) => { res.json({ status: 'online', version: 'v300.0', agents: agents.length }); });
 
 const server = http.createServer(app);
 const io = new Server(server, { 
     cors: { origin: "*", methods: ["GET", "POST"] },
-    // CRITICAL: Increased timeouts for heavy scans
+    // CRITICAL: Increased timeouts for heavy scans (Nmap, Nuclei)
+    // This allows clients to "hang" while processing heavy CPU tasks without disconnect
     pingInterval: 25000, 
-    pingTimeout: 60000, 
+    pingTimeout: 120000, // 2 Minutes timeout!
     maxHttpBufferSize: 1e8, 
     transports: ['polling', 'websocket'] 
 });
@@ -130,4 +131,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v207 LISTENING ON ${PORT}`));
+server.listen(PORT, () => console.log(`HYDRA v300 LISTENING ON ${PORT}`));
