@@ -50,7 +50,7 @@ io.on('connection', (socket) => {
   socket.on('agent_chunk', (chunk) => {
      io.to('ui_room').emit('agent_event', chunk);
      
-     if (['SUCCESS', 'ERROR', 'loot', 'TELEMETRY', 'REPORT', 'EVIDENCE'].includes(chunk.type)) {
+     if (['SUCCESS', 'ERROR', 'loot', 'TELEMETRY', 'REPORT', 'EVIDENCE', 'ACK'].includes(chunk.type)) {
          eventHistory.push({ ...chunk, timestamp: Date.now() });
          if (eventHistory.length > 1000) eventHistory.shift();
      }
